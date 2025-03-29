@@ -1,0 +1,26 @@
+{
+	"folders": [
+		{
+			"path": "."
+		}
+	],
+	"settings": {
+		"typescript.tsdk": "node_modules/typescript/lib",
+		"debug.javascript.autoAttachFilter": "smart",
+		"workbench.colorCustomizations": {
+			"statusBar.background": "#1a1a1a",
+			"statusBar.noFolderBackground": "#0a0a0a",
+			"statusBar.debuggingBackground": "#511f1f"
+		},
+		"search.maxResults": 10000,
+		"typescript.disableAutomaticTypeAcquisition": true,
+		"typescript.tsserver.maxTsServerMemory": 3072,
+		"typescript.tsserver.watchOptions": {
+			"watchFile": "useFsEvents",
+			"watchDirectory": "useFsEvents",
+			"fallbackPolling": "dynamicPriorityPolling"
+		},
+		"workbench.editor.limit.enabled": true,
+		"workbench.editor.limit.value": 10
+	}
+}
