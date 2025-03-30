@@ -411,1520 +411,449 @@ contract StreamToken is ERC20, Ownable {
     event BridgeOperationValidated(uint256 operationId, address validator);
     event BridgeOperationCompleted(uint256 operationId, string txHash);
 
-    // --- Knowledge Test Functions ---
+    // --- Proof of Location (PoL) System ---
+    struct LocationData {
+        int256 latitude;  // Stored as int with 6 decimal points precision (e.g. 45123456 = 45.123456)
+        int256 longitude; // Stored as int with 6 decimal points precision (e.g. 9876543 = 9.876543)
+        uint256 timestamp; // When the location was recorded
+        uint256 accuracy;  // Accuracy in meters
+        address verifier;  // Address that verified this location
+        bool verified;     // Whether the location has been verified
+        string extraData;  // Additional location metadata (e.g. altitude, country, etc.)
+    }
+
+    struct LocationVerifier {
+        address verifierAddress;
+        string name;
+        bool isActive;
+        uint256 trustScore; // 0-100 scale of trustworthiness
+        uint256 verificationCount;
+    }
+
+    struct GeofencedZone {
+        string name;
+        int256 centerLatitude;
+        int256 centerLongitude;
+        uint256 radiusMeters;
+        bool active;
+        address creator;
+        mapping(address => bool) allowedUsers;
+        bool isPublic; // If true, anyone can access
+    }
+
+    // Mappings for PoL
+    mapping(address => LocationData) public userLocations;
+    mapping(uint256 => GeofencedZone) public geofencedZones;
+    uint256 public nextGeofenceId;
+    mapping(address => bool) public locationVerifiers;
+    mapping(address => LocationVerifier) public verifierDetails;
+    address[] public verifiersList;
     
-    // Create a new knowledge test
-    function createKnowledgeTest(
-        string calldata testName,
-        bytes32 questionHash,
-        bytes32 answerHash,
-        uint256 maxScore,
-        uint256 expiryDays
-    ) external onlyOwner {
-        knowledgeTests[nextKnowledgeTestId] = KnowledgeTest({
-            testName: testName,
-            questionHash: questionHash,
-            answerHash: answerHash,
-            maxScore: maxScore,
-            expiryDays: expiryDays
-        });
-        
-        emit KnowledgeTestCreated(nextKnowledgeTestId, testName);
-        nextKnowledgeTestId++;
+    // Location-based access controls
+    mapping(uint256 => mapping(address => bool)) public zoneAccessPermissions;
+    mapping(uint256 => mapping(uint256 => bool)) public resourceZoneRestrictions; // Resource ID -> Zone ID -> Restricted
+    
+    // Events for PoL
+    event LocationUpdated(address indexed user, int256 latitude, int256 longitude, uint256 timestamp);
+    event LocationVerified(address indexed user, address indexed verifier, uint256 timestamp);
+    event GeofenceCreated(uint256 indexed geofenceId, string name, address creator);
+    event GeofenceAccessGranted(uint256 indexed geofenceId, address indexed user);
+    event GeofenceAccessRevoked(uint256 indexed geofenceId, address indexed user);
+    event VerifierAdded(address indexed verifier, string name);
+    event VerifierRemoved(address indexed verifier);
+    
+    // --- TypeScript to C Transpiler (TS2C) System ---
+    
+    enum LanguageDialect {
+        TYPESCRIPT,
+        JAVASCRIPT,
+        C,
+        CPP
     }
     
-    // Score a user's knowledge test
-    function scoreKnowledgeTest(
-        address user, 
-        uint256 testId, 
-        uint256 score, 
-        bytes memory proof
-    ) external onlyGwenAdmin {
-        require(score <= knowledgeTests[testId].maxScore, "Score exceeds maximum");
-        
-        // In production, verify the proof cryptographically
-        // For now, this is simplified and assumes the admin's verification
-        
-        uint256 expiryDays = knowledgeTests[testId].expiryDays;
-        uint256 expiryTime = block.timestamp + (expiryDays * 1 days);
-        
-        userKnowledgeScores[user][testId] = UserKnowledgeScore({
-            testId: testId,
-            user: user,
-            score: score,
-            timestamp: block.timestamp,
-            expiryTime: expiryTime
-        });
-        
-        emit KnowledgeTestScored(user, testId, score);
+    enum TranspilationStatus {
+        PENDING,
+        COMPLETED,
+        FAILED,
+        VALIDATING,
+        EXECUTING
     }
     
-    // Get user's knowledge score
-    function getUserKnowledgeScore(address user, uint256 testId) public view returns (uint256) {
-        UserKnowledgeScore memory userScore = userKnowledgeScores[user][testId];
-        
-        if (userScore.expiryTime < block.timestamp) {
-            return 0; // Score has expired
-        }
-        
-        return userScore.score;
+    struct CodeSnippet {
+        string code;
+        LanguageDialect dialect;
+        uint256 creationTime;
+        address creator;
+        uint256 linesOfCode;
+        bool validated;
+        string metadata;
     }
     
-    // --- Proposal Functions ---
-    
-    // Create a new governance proposal
-    function createProposal(
-        string calldata title,
-        string calldata description,
-        uint256 startTime,
-        uint256 endTime,
-        uint256 requiredKnowledgeTestId,
-        uint256 minKnowledgeScore,
-        bytes calldata executionData
-    ) external notBlocked whenNotPaused {
-        require(balanceOf(msg.sender) >= proposals[nextProposalId].minTokensToPropose, "Insufficient tokens to propose");
-        require(endTime > startTime, "End time must be after start time");
-        require(startTime >= block.timestamp, "Start time must be in the future");
-        
-        if (requiredKnowledgeTestId > 0) {
-            require(getUserKnowledgeScore(msg.sender, requiredKnowledgeTestId) >= minKnowledgeScore, 
-                "Proposer lacks required knowledge score");
-        }
-        
-        proposals[nextProposalId] = Proposal({
-            title: title,
-            description: description,
-            proposer: msg.sender,
-            startTime: startTime,
-            endTime: endTime,
-            requiredKnowledgeTestId: requiredKnowledgeTestId,
-            minKnowledgeScore: minKnowledgeScore,
-            minTokensToPropose: proposals[nextProposalId].minTokensToPropose,
-            minTokensToVote: proposals[nextProposalId].minTokensToVote,
-            executed: false,
-            passed: false,
-            executionData: executionData
-        });
-        
-        emit ProposalCreated(nextProposalId, msg.sender, title);
-        nextProposalId++;
+    struct TranspilationJob {
+        uint256 sourceSnippetId;
+        uint256 targetSnippetId;
+        TranspilationStatus status;
+        uint256 startTime;
+        uint256 endTime;
+        string errorMessage;
+        address transpiler;
+        uint256 gasUsed;
+        string optimizationLevel; // "O0", "O1", "O2", "O3"
+        mapping(string => string) transpilationOptions;
     }
     
-    // Cast a vote on a proposal
-    function castVote(
-        uint256 proposalId,
-        bool support,
-        string calldata justification
-    ) external notBlocked whenNotPaused {
-        Proposal storage proposal = proposals[proposalId];
-        
-        require(block.timestamp >= proposal.startTime, "Voting has not started");
-        require(block.timestamp <= proposal.endTime, "Voting has ended");
-        require(!proposal.executed, "Proposal already executed");
-        require(votes[proposalId][msg.sender].voter == address(0), "Already voted");
-        require(balanceOf(msg.sender) >= proposal.minTokensToVote, "Insufficient tokens to vote");
-        
-        // Check knowledge test requirement if specified
-        if (proposal.requiredKnowledgeTestId > 0) {
-            require(
-                getUserKnowledgeScore(msg.sender, proposal.requiredKnowledgeTestId) >= proposal.minKnowledgeScore,
-                "Insufficient knowledge score"
-            );
-        }
-        
-        // Calculate vote weight based on knowledge and token balance
-        uint256 tokenBalance = balanceOf(msg.sender);
-        uint256 knowledgeScore = proposal.requiredKnowledgeTestId > 0 
-            ? getUserKnowledgeScore(msg.sender, proposal.requiredKnowledgeTestId)
-            : 0;
-        
-        uint256 weight = calculateVoteWeight(tokenBalance, knowledgeScore, proposal.requiredKnowledgeTestId);
-        
-        // Record the vote
-        votes[proposalId][msg.sender] = Vote({
-            voter: msg.sender,
-            support: support,
-            weight: weight,
-            justification: justification
-        });
-        
-        proposalVoters[proposalId].push(msg.sender);
-        
-        emit VoteCast(proposalId, msg.sender, support, weight);
+    struct TranspilationRule {
+        string patternRegex;       // Regex pattern to match
+        string replacementTemplate; // Template for replacement
+        uint256 priority;          // Higher number = higher priority
+        bool active;
+        address creator;
+        uint256 usageCount;
     }
     
-    // Calculate vote weight based on token balance and knowledge score
-    function calculateVoteWeight(
-        uint256 tokenBalance,
-        uint256 knowledgeScore,
-        uint256 testId
-    ) public view returns (uint256) {
-        uint256 maxKnowledgeScore = testId > 0 ? knowledgeTests[testId].maxScore : 1;
-        
-        // Normalize knowledge score to 0-100 range
-        uint256 normalizedKnowledgeScore = testId > 0 
-            ? (knowledgeScore * 100) / maxKnowledgeScore 
-            : 0;
-        
-        // Calculate weight components
-        uint256 tokenComponent = (tokenBalance * tokenWeight) / 100;
-        uint256 knowledgeComponent = (normalizedKnowledgeScore * knowledgeWeight) / 100;
-        
-        // Combined weight (this is a simplified model - more complex models are possible)
-        return tokenComponent + knowledgeComponent;
+    struct ExecutionResult {
+        bool success;
+        string output;
+        uint256 executionTime;
+        uint256 memoryUsed;
+        string errorMessage;
     }
     
-    // Execute a proposal after voting has ended
-    function executeProposal(uint256 proposalId) external whenNotPaused {
-        Proposal storage proposal = proposals[proposalId];
+    // Storage for code snippets and transpilation jobs
+    mapping(uint256 => CodeSnippet) public codeSnippets;
+    uint256 public nextSnippetId;
+    
+    mapping(uint256 => TranspilationJob) public transpilationJobs;
+    uint256 public nextTranspilationId;
+    
+    mapping(uint256 => TranspilationRule) public transpilationRules;
+    uint256 public nextRuleId;
+    
+    mapping(address => bool) public authorizedTranspilers;
+    mapping(string => uint256) public symbolTable;
+    
+    // Counter for successful transpilations
+    uint256 public successfulTranspilations;
+    
+    // Events
+    event SnippetCreated(uint256 indexed snippetId, LanguageDialect dialect, address creator);
+    event TranspilationJobCreated(uint256 indexed jobId, uint256 sourceId, address creator);
+    event TranspilationJobCompleted(uint256 indexed jobId, uint256 targetId, TranspilationStatus status);
+    event TranspilationRuleAdded(uint256 indexed ruleId, address creator);
+    event CodeExecuted(uint256 indexed snippetId, bool success, uint256 executionTime);
+    
+    // --- TS2C Access Control ---
+    
+    modifier onlyTranspiler() {
+        require(authorizedTranspilers[msg.sender] || msg.sender == owner(), "Not an authorized transpiler");
+        _;
+    }
+    
+    // --- TS2C Management Functions ---
+    
+    // Set transpiler authorization
+    function setTranspilerAuthorization(address transpiler, bool authorized) external onlyOwner {
+        authorizedTranspilers[transpiler] = authorized;
+    }
+    
+    // Create a new code snippet
+    function createCodeSnippet(
+        string calldata code, 
+        LanguageDialect dialect, 
+        string calldata metadata
+    ) external whenNotPaused returns (uint256) {
+        require(bytes(code).length > 0, "Code cannot be empty");
+        require(bytes(code).length <= 10240, "Code too long, max 10KB");
         
-        require(block.timestamp > proposal.endTime, "Voting has not ended");
-        require(!proposal.executed, "Proposal already executed");
+        uint256 snippetId = nextSnippetId++;
         
-        // Calculate results
-        uint256 forVotes = 0;
-        uint256 againstVotes = 0;
-        uint256 totalVoterTokens = 0;
-        
-        for (uint256 i = 0; i < proposalVoters[proposalId].length; i++) {
-            address voter = proposalVoters[proposalId][i];
-            Vote storage vote = votes[proposalId][voter];
-            
-            if (vote.support) {
-                forVotes += vote.weight;
-            } else {
-                againstVotes += vote.weight;
+        // Count lines of code (simple method - count newlines + 1)
+        uint256 linesOfCode = 1;
+        bytes memory codeBytes = bytes(code);
+        for (uint i = 0; i < codeBytes.length; i++) {
+            if (codeBytes[i] == 0x0A) { // Newline character
+                linesOfCode++;
             }
-            
-            totalVoterTokens += balanceOf(voter);
         }
         
-        // Check if quorum reached
-        uint256 quorumTokens = (totalSupply() * quorumPercentage) / 100;
-        bool quorumReached = totalVoterTokens >= quorumTokens;
-        
-        // Determine if proposal passed
-        bool passed = quorumReached && forVotes > againstVotes;
-        proposal.passed = passed;
-        proposal.executed = true;
-        
-        if (passed && proposal.executionData.length > 0) {
-            // Execute proposal logic
-            // In production, this would typically be handled via a timelock and governance executor
-            // For simplicity, we're just marking it as executed here
-        }
-        
-        emit ProposalExecuted(proposalId, passed);
-    }
-    
-    // --- Governance Control Functions ---
-    
-    // Update governance parameters (only callable by Gwen admins or owner)
-    function updateGovernanceParameters(
-        uint256 _quorumPercentage,
-        uint256 _knowledgeWeight,
-        uint256 _tokenWeight,
-        uint256 _minTokensToPropose,
-        uint256 _minTokensToVote
-    ) external onlyGwenLevel(5) {
-        require(_knowledgeWeight + _tokenWeight == 100, "Weights must sum to 100");
-        require(_quorumPercentage <= 51, "Quorum percentage too high");
-        
-        quorumPercentage = _quorumPercentage;
-        knowledgeWeight = _knowledgeWeight;
-        tokenWeight = _tokenWeight;
-        
-        // Update proposal requirements
-        proposals[0].minTokensToPropose = _minTokensToPropose;
-        proposals[0].minTokensToVote = _minTokensToVote;
-    }
-
-    // Modifiers
-    modifier onlyGwenAdmin() {
-        require(gwenAdmins[msg.sender].isActive, "Not a Gwen administrator");
-        _;
-    }
-
-    modifier onlyGwenLevel(uint256 requiredLevel) {
-        require(gwenAdmins[msg.sender].isActive, "Not a Gwen administrator");
-        require(gwenAdmins[msg.sender].accessLevel >= requiredLevel, "Insufficient Gwen access level");
-        _;
-    }
-
-    modifier gwenSudoLog(string memory actionType, string memory reason) {
-        uint256 actionId = nextSudoActionId++;
-        
-        // Log the action before execution
-        sudoActionLog[actionId] = SudoAction({
-            actionId: actionId,
-            executor: msg.sender,
-            actionType: actionType,
-            actionData: msg.data,
-            reason: reason,
-            timestamp: block.timestamp,
-            reverted: false
+        codeSnippets[snippetId] = CodeSnippet({
+            code: code,
+            dialect: dialect,
+            creationTime: block.timestamp,
+            creator: msg.sender,
+            linesOfCode: linesOfCode,
+            validated: false,
+            metadata: metadata
         });
         
-        // Execute the function
-        bool success = true;
-        try {
-            _;
-        } catch {
-            // Mark as reverted if execution fails
-            sudoActionLog[actionId].reverted = true;
-            success = false;
-        }
+        emit SnippetCreated(snippetId, dialect, msg.sender);
+        
+        return snippetId;
+    }
+    
+    // Create a transpilation job from TypeScript to C
+    function createTranspilationJob(
+        uint256 sourceSnippetId,
+        string calldata optimizationLevel
+    ) external whenNotPaused returns (uint256) {
+        require(codeSnippets[sourceSnippetId].creator != address(0), "Source snippet does not exist");
+        require(codeSnippets[sourceSnippetId].dialect == LanguageDialect.TYPESCRIPT, "Source must be TypeScript");
+        
+        // Create an empty placeholder for the target C code
+        uint256 targetSnippetId = createCodeSnippet("// Transpilation pending...", LanguageDialect.C, "Auto-generated C code");
+        
+        uint256 jobId = nextTranspilationId++;
+        
+        TranspilationJob storage job = transpilationJobs[jobId];
+        job.sourceSnippetId = sourceSnippetId;
+        job.targetSnippetId = targetSnippetId;
+        job.status = TranspilationStatus.PENDING;
+        job.startTime = block.timestamp;
+        job.transpiler = address(0);  // Not assigned yet
+        job.optimizationLevel = optimizationLevel;
+        
+        emit TranspilationJobCreated(jobId, sourceSnippetId, msg.sender);
+        
+        return jobId;
+    }
+    
+    // Process a transpilation job (by authorized transpilers)
+    function processTranspilationJob(
+        uint256 jobId, 
+        string calldata resultCode, 
+        bool success, 
+        string calldata errorMessage
+    ) external onlyTranspiler whenNotPaused {
+        TranspilationJob storage job = transpilationJobs[jobId];
+        require(job.status == TranspilationStatus.PENDING, "Job not in pending status");
+        
+        job.transpiler = msg.sender;
+        job.endTime = block.timestamp;
+        job.gasUsed = gasleft(); // Approximate gas used
         
         if (success) {
-            emit GwenActionExecuted(actionId, msg.sender, actionType);
+            job.status = TranspilationStatus.COMPLETED;
+            successfulTranspilations++;
+            
+            // Update target snippet with the transpiled C code
+            codeSnippets[job.targetSnippetId].code = resultCode;
+            codeSnippets[job.targetSnippetId].validated = true;
+        } else {
+            job.status = TranspilationStatus.FAILED;
+            job.errorMessage = errorMessage;
         }
-    }
-
-    // --- Gwen Admin Management Functions ---
-    
-    // Appoint a new Gwen administrator (only contract owner can do this)
-    function appointGwenAdmin(
-        address admin,
-        string calldata adminName,
-        uint256 accessLevel
-    ) external onlyOwner {
-        require(admin != address(0), "Invalid admin address");
-        require(accessLevel > 0 && accessLevel <= 5, "Access level must be 1-5");
-        require(!gwenAdmins[admin].isActive, "Already a Gwen admin");
         
-        gwenAdmins[admin] = GwenAdmin({
-            adminAddress: admin,
-            adminName: adminName,
-            accessLevel: accessLevel,
-            isActive: true,
-            appointedTime: block.timestamp,
-            appointedBy: msg.sender
+        emit TranspilationJobCompleted(jobId, job.targetSnippetId, job.status);
+    }
+    
+    // Add transpilation rule (pattern->replacement)
+    function addTranspilationRule(
+        string calldata pattern, 
+        string calldata replacement, 
+        uint256 priority
+    ) external onlyTranspiler {
+        uint256 ruleId = nextRuleId++;
+        
+        transpilationRules[ruleId] = TranspilationRule({
+            patternRegex: pattern,
+            replacementTemplate: replacement,
+            priority: priority,
+            active: true,
+            creator: msg.sender,
+            usageCount: 0
         });
         
-        gwenAdminList.push(admin);
-        emit GwenAdminAdded(admin, adminName, accessLevel);
+        emit TranspilationRuleAdded(ruleId, msg.sender);
     }
     
-    // Remove a Gwen administrator
-    function removeGwenAdmin(address admin) external onlyOwner gwenSudoLog("RemoveGwenAdmin", "Admin removal") {
-        require(gwenAdmins[admin].isActive, "Not an active Gwen admin");
-        gwenAdmins[admin].isActive = false;
-        
-        emit GwenAdminRemoved(admin);
-    }
-    
-    // Change access level of a Gwen administrator
-    function changeGwenAccessLevel(address admin, uint256 newLevel) external onlyGwenLevel(5) gwenSudoLog("ChangeGwenLevel", "Access level change") {
-        require(gwenAdmins[admin].isActive, "Not an active Gwen admin");
-        require(newLevel > 0 && newLevel <= 5, "Access level must be 1-5");
-        
-        gwenAdmins[admin].accessLevel = newLevel;
-    }
-    
-    // Set the required quorum for high-level actions
-    function setGwenQuorum(uint256 newQuorum) external onlyOwner {
-        gwenQuorum = newQuorum;
-    }
-    
-    // --- Gwen Emergency Functions ---
-    
-    // Activate Gwen override mode (temporarily gives special permissions)
-    function activateGwenOverride(uint256 durationHours) external onlyGwenLevel(5) gwenSudoLog("ActivateOverride", "Emergency override") {
-        gwenOverrideActive = true;
-        gwenOverrideExpiry = block.timestamp + (durationHours * 1 hours);
-        
-        emit GwenOverrideActivated(msg.sender, durationHours);
-    }
-    
-    // Deactivate Gwen override mode
-    function deactivateGwenOverride() external onlyGwenLevel(5) gwenSudoLog("DeactivateOverride", "Override ended") {
-        gwenOverrideActive = false;
-        emit GwenOverrideDeactivated(msg.sender);
-    }
-    
-    // Check if Gwen override is active
-    function isGwenOverrideActive() public view returns (bool) {
-        if (!gwenOverrideActive) {
-            return false;
-        }
-        
-        return block.timestamp <= gwenOverrideExpiry;
-    }
-    
-    // --- Gwen Emergency Actions ---
-    
-    // Emergency pause/unpause contract (overrides owner)
-    function gwenEmergencyPause(bool paused, string calldata reason) external onlyGwenLevel(4) gwenSudoLog("EmergencyPause", reason) {
-        emergencyPause = paused;
-        emit SecurityStateChanged(paused);
-        emit GwenEmergencyAction(nextSudoActionId - 1, "EmergencyPause", reason);
-    }
-    
-    // Emergency block/unblock address (overrides owner)
-    function gwenEmergencyBlockAddress(address addr, bool blocked, string calldata reason) external onlyGwenLevel(4) gwenSudoLog("EmergencyBlock", reason) {
-        blockedAddresses[addr] = blocked;
-        emit GwenEmergencyAction(nextSudoActionId - 1, "EmergencyBlock", reason);
-    }
-    
-    // Emergency transaction execution (for critical situations)
-    function gwenEmergencyExecute(
-        address target,
-        bytes calldata data,
-        string calldata reason
-    ) external onlyGwenLevel(5) gwenSudoLog("EmergencyExecute", reason) {
-        require(isGwenOverrideActive(), "Gwen override not active");
-        
-        (bool success, ) = target.call(data);
-        require(success, "Gwen emergency execution failed");
-        
-        emit GwenEmergencyAction(nextSudoActionId - 1, "EmergencyExecute", reason);
-    }
-    
-    // Emergency token recovery (retrieve stuck tokens)
-    function gwenEmergencyRecover(
-        address token,
-        address to,
-        uint256 amount,
-        string calldata reason
-    ) external onlyGwenLevel(5) gwenSudoLog("EmergencyRecover", reason) {
-        require(isGwenOverrideActive(), "Gwen override not active");
-        
-        if (token == address(0)) {
-            // Recover ETH
-            payable(to).transfer(amount);
-        } else if (token == address(this)) {
-            // Recover native tokens
-            _transfer(address(this), to, amount);
-        } else {
-            // Recover other ERC20 tokens
-            IERC20(token).transfer(to, amount);
-        }
-        
-        emit GwenEmergencyAction(nextSudoActionId - 1, "EmergencyRecover", reason);
-    }
-    
-    // --- Gwen Audit Functions ---
-    
-    // Get all Gwen administrators
-    function getAllGwenAdmins() external view returns (address[] memory) {
-        return gwenAdminList;
-    }
-    
-    // Get action log entry
-    function getSudoActionLog(uint256 actionId) external view returns (
-        address executor,
-        string memory actionType,
-        bytes memory actionData,
-        string memory reason,
-        uint256 timestamp,
-        bool reverted
+    // Get code snippet details
+    function getCodeSnippet(uint256 snippetId) external view returns (
+        string memory code,
+        LanguageDialect dialect,
+        uint256 creationTime,
+        address creator,
+        uint256 linesOfCode
     ) {
-        SudoAction storage action = sudoActionLog[actionId];
+        CodeSnippet storage snippet = codeSnippets[snippetId];
+        require(snippet.creator != address(0), "Snippet does not exist");
+        
         return (
-            action.executor,
-            action.actionType,
-            action.actionData,
-            action.reason,
-            action.timestamp,
-            action.reverted
+            snippet.code,
+            snippet.dialect,
+            snippet.creationTime,
+            snippet.creator,
+            snippet.linesOfCode
         );
     }
     
-    // Get recent action logs
-    function getRecentSudoActions(uint256 count) external view returns (uint256[] memory) {
-        uint256 resultCount = count;
-        if (nextSudoActionId < count) {
-            resultCount = nextSudoActionId;
+    // Validate TypeScript syntax (basic check)
+    function validateTypeScriptSyntax(uint256 snippetId) external returns (bool) {
+        CodeSnippet storage snippet = codeSnippets[snippetId];
+        require(snippet.dialect == LanguageDialect.TYPESCRIPT, "Not a TypeScript snippet");
+        
+        // This is a very basic validation. In a real implementation,
+        // this would be much more sophisticated.
+        bytes memory code = bytes(snippet.code);
+        bool hasOpenBrace = false;
+        bool hasCloseBrace = false;
+        bool hasSemicolon = false;
+        
+        for (uint256 i = 0; i < code.length; i++) {
+            if (code[i] == '{') hasOpenBrace = true;
+            if (code[i] == '}') hasCloseBrace = true;
+            if (code[i] == ';') hasSemicolon = true;
         }
         
-        uint256[] memory actionIds = new uint256[](resultCount);
-        for (uint256 i = 0; i < resultCount; i++) {
-            actionIds[i] = nextSudoActionId - i - 1;
-        }
+        bool valid = hasOpenBrace && hasCloseBrace && hasSemicolon;
+        snippet.validated = valid;
         
-        return actionIds;
+        return valid;
     }
-
-    // --- Function Modifiers ---
-    modifier whenNotPaused() {
-        require(!emergencyPause, "Contract is paused");
-        _;
-    }
-
-    modifier onlyTrustedOperator() {
-        require(trustedOperators[msg.sender] || msg.sender == owner(), "Not a trusted operator");
-        _;
-    }
-
-    modifier canManageFor(address user) {
-        require(msg.sender == user || delegateApprovals[user][msg.sender], "Not authorized to manage");
-        _;
-    }
-
-    constructor(string memory name, string memory symbol) ERC20(name, symbol) {
-        rewardRatePerSecond = 1e16; // Example: 0.01 tokens per second
-    }
-
-    // Block an address from interacting with the contract
-    function blockAddress(address addr) external onlyOwner {
-        blockedAddresses[addr] = true;
-    }
-
-    // Unblock an address
-    function unblockAddress(address addr) external onlyOwner {
-        blockedAddresses[addr] = false;
-    }
-
-    // Modifier to check if the caller is blocked
-    modifier notBlocked() {
-        require(!blockedAddresses[msg.sender], "Address is blocked");
-        _;
-    }
-
-    // --- Security Functions ---
-    function setEmergencyPause(bool paused) external onlyOwner {
-        emergencyPause = paused;
-        emit SecurityStateChanged(paused);
-    }
-
-    function addTrustedOperator(address operator) external onlyOwner {
-        trustedOperators[operator] = true;
-    }
-
-    function removeTrustedOperator(address operator) external onlyOwner {
-        trustedOperators[operator] = false;
-    }
-
-    // --- Token Configuration ---
-    function setTokenConfig(uint256 _maxSupply, uint256 _burnRate, uint256 _transferTaxRate) external onlyOwner {
-        require(_burnRate <= 500, "Burn rate too high"); // Max 5%
-        require(_transferTaxRate <= 500, "Transfer tax too high"); // Max 5%
-
-        tokenConfig = TokenConfig({
-            maxSupply: _maxSupply,
-            burnRate: _burnRate,
-            transferTaxRate: _transferTaxRate
-        });
-    }
-
-    // Override ERC20 transfer with burn and tax logic
-    function _transfer(
-        address sender,
-        address recipient,
-        uint256 amount
-    ) internal virtual override whenNotPaused {
-        uint256 burnAmount = (amount * tokenConfig.burnRate) / 10000;
-        uint256 taxAmount = (amount * tokenConfig.transferTaxRate) / 10000;
-        uint256 transferAmount = amount - burnAmount - taxAmount;
-
-        if (burnAmount > 0) {
-            super._burn(sender, burnAmount);
-            totalBurned += burnAmount;
-        }
-
-        if (taxAmount > 0) {
-            super._transfer(sender, address(this), taxAmount);
-        }
-
-        super._transfer(sender, recipient, transferAmount);
-    }
-
-    // --- Escrow Functions ---
-    function createEscrow(address recipient, uint256 amount, uint256 releaseTime) external notBlocked whenNotPaused {
-        require(balanceOf(msg.sender) >= amount, "Insufficient balance");
-        require(releaseTime > block.timestamp, "Release time must be in future");
-
-        _transfer(msg.sender, address(this), amount);
-
-        escrows[nextEscrowId] = Escrow({
-            depositor: msg.sender,
-            recipient: recipient,
-            amount: amount,
-            releaseTime: releaseTime,
-            released: false
-        });
-
-        emit EscrowCreated(nextEscrowId, msg.sender, recipient, amount);
-        nextEscrowId++;
-    }
-
-    function releaseEscrow(uint256 escrowId) external whenNotPaused {
-        Escrow storage escrow = escrows[escrowId];
-        require(!escrow.released, "Escrow already released");
-        require(block.timestamp >= escrow.releaseTime, "Release time not reached");
-        require(msg.sender == escrow.depositor || msg.sender == escrow.recipient || msg.sender == owner(), "Not authorized");
-
-        escrow.released = true;
-        _transfer(address(this), escrow.recipient, escrow.amount);
-
-        emit EscrowReleased(escrowId);
-    }
-
-    function cancelEscrow(uint256 escrowId) external whenNotPaused {
-        Escrow storage escrow = escrows[escrowId];
-        require(!escrow.released, "Escrow already released");
-        require(msg.sender == escrow.depositor || msg.sender == owner(), "Not authorized");
-
-        escrow.released = true;
-        _transfer(address(this), escrow.depositor, escrow.amount);
-    }
-
-    // --- Notification Functions ---
-    function setNotificationsEnabled(bool enabled) external {
-        notificationsEnabled[msg.sender] = enabled;
-    }
-
-    function addNotification(address user, string calldata notificationType, string calldata message) external onlyTrustedOperator {
-        if (notificationsEnabled[user]) {
-            userNotifications[user].push(message);
-            emit Notification(user, notificationType, message);
-        }
-    }
-
-    function getUserNotifications(address user) external view returns (string[] memory) {
-        return userNotifications[user];
-    }
-
-    // --- Delegation Functions ---
-    function createDelegation(address delegate, bool canTransfer, bool canManage, bool canClaim) external whenNotPaused {
-        delegateApprovals[msg.sender][delegate] = true;
-
-        delegations[nextDelegationId] = Delegation({
-            delegator: msg.sender,
-            delegate: delegate,
-            canTransfer: canTransfer,
-            canManage: canManage,
-            canClaim: canClaim
-        });
-
-        emit DelegationCreated(nextDelegationId, msg.sender, delegate);
-        nextDelegationId++;
-    }
-
-    function revokeDelegation(address delegate) external {
-        delegateApprovals[msg.sender][delegate] = false;
-
-        // Find and mark delegations as revoked in event
-        for (uint256 i = 0; i < nextDelegationId; i++) {
-            if (delegations[i].delegator == msg.sender && delegations[i].delegate == delegate) {
-                emit DelegationRevoked(i);
-            }
-        }
-    }
-
-    function transferForDelegate(address delegator, address recipient, uint256 amount) external whenNotPaused {
-        require(delegateApprovals[delegator][msg.sender], "Not approved delegate");
-
-        // Find delegation to check permissions
-        bool hasPermission = false;
-        for (uint256 i = 0; i < nextDelegationId; i++) {
-            Delegation storage delegation = delegations[i];
-            if (delegation.delegator == delegator && delegation.delegate == msg.sender && delegation.canTransfer) {
-                hasPermission = true;
+    
+    // Execute a simple operation from transpiled C code (simulation)
+    function simulateExecution(uint256 snippetId) external view returns (ExecutionResult memory) {
+        CodeSnippet storage snippet = codeSnippets[snippetId];
+        require(snippet.dialect == LanguageDialect.C, "Only C code can be executed");
+        require(snippet.validated, "Code not validated");
+        
+        // Simplified simulation - this just extracts values from the code
+        bytes memory code = bytes(snippet.code);
+        
+        // Check if code contains "return" statement
+        bool hasReturn = false;
+        for (uint i = 0; i < code.length - 5; i++) {
+            if (code[i] == 'r' && code[i+1] == 'e' && code[i+2] == 't' && 
+                code[i+3] == 'u' && code[i+4] == 'r' && code[i+5] == 'n') {
+                hasReturn = true;
                 break;
             }
         }
-
-        require(hasPermission, "Delegate not authorized to transfer");
-        _transfer(delegator, recipient, amount);
-    }
-
-    // --- Bitcoin Treasury Management Functions ---
-    
-    // Update BTC price from trusted oracle
-    function updateBTCPrice(uint256 price) external onlyTrustedOperator {
-        btcPriceData.price = price;
-        btcPriceData.lastUpdated = block.timestamp;
-        btcPriceData.oracleProvider = msg.sender;
         
-        // Recalculate treasury value
-        treasuryValueUSD = (totalBTCHoldings * price) / 1e8; // Convert satoshis to BTC
+        // Very basic simulation
+        ExecutionResult memory result;
+        result.success = hasReturn;
+        result.output = hasReturn ? "Function executed with return statement" : "Function executed without return";
+        result.executionTime = 100; // Simulated execution time (ms)
+        result.memoryUsed = snippet.code.length * 2; // Simple memory estimation
         
-        emit BTCPriceUpdated(price, msg.sender);
-    }
-    
-    // Add BTC holdings to treasury (record keeping)
-    function addBTCToTreasury(uint256 btcAmount, uint256 acquisitionCostUSD) external onlyOwner {
-        BitcoinTreasury memory newAcquisition = BitcoinTreasury({
-            btcAmount: btcAmount,
-            acquisitionCostUSD: acquisitionCostUSD,
-            acquisitionDate: block.timestamp
-        });
-        
-        bitcoinTreasury.push(newAcquisition);
-        totalBTCHoldings += btcAmount;
-        
-        // Update treasury value
-        treasuryValueUSD = (totalBTCHoldings * btcPriceData.price) / 1e8; // Convert satoshis to BTC
-        
-        emit BTCTreasuryUpdated(totalBTCHoldings, treasuryValueUSD);
-    }
-    
-    // Get average acquisition cost of BTC holdings
-    function getAverageBTCAcquisitionCost() external view returns (uint256) {
-        if (totalBTCHoldings == 0) return 0;
-        
-        uint256 totalCost = 0;
-        for (uint256 i = 0; i < bitcoinTreasury.length; i++) {
-            totalCost += bitcoinTreasury[i].acquisitionCostUSD;
+        if (!hasReturn) {
+            result.errorMessage = "Warning: No return statement found";
         }
         
-        return (totalCost * 1e8) / totalBTCHoldings; // USD per BTC (6 decimals)
+        return result;
     }
     
-    // --- Startup Investment Functions (YC Style) ---
-    
-    // Create a new startup investment
-    function createStartupInvestment(
-        string calldata name,
-        string calldata description,
-        uint256 investmentAmount,
-        uint256 equityPercentage,
-        uint256 valuationCap,
-        uint256 maturityDate
-    ) external onlyOwner whenNotPaused {
-        require(balanceOf(address(this)) >= investmentAmount, "Insufficient treasury balance");
-        require(maturityDate > block.timestamp, "Maturity date must be in future");
-        
-        startupInvestments[nextInvestmentId] = StartupInvestment({
-            name: name,
-            description: description,
-            investmentAmount: investmentAmount,
-            equityPercentage: equityPercentage,
-            valuationCap: valuationCap,
-            investmentDate: block.timestamp,
-            maturityDate: maturityDate,
-            active: true
-        });
-        
-        totalInvestedAmount += investmentAmount;
-        
-        emit StartupInvestmentCreated(nextInvestmentId, name, investmentAmount);
-        nextInvestmentId++;
+    // Set transpilation option for a job
+    function setTranspilationOption(
+        uint256 jobId, 
+        string calldata option, 
+        string calldata value
+    ) external onlyTranspiler {
+        require(transpilationJobs[jobId].status == TranspilationStatus.PENDING, "Job not in pending status");
+        transpilationJobs[jobId].transpilationOptions[option] = value;
     }
     
-    // Record a startup investment exit
-    function exitStartupInvestment(uint256 investmentId, uint256 returnAmount) external onlyOwner {
-        StartupInvestment storage investment = startupInvestments[investmentId];
-        require(investment.active, "Investment already exited");
+    // Get all transpilation jobs for a specific source snippet
+    function getTranspilationJobsForSnippet(uint256 snippetId) external view returns (uint256[] memory) {
+        uint256 count = 0;
         
-        investment.active = false;
-        totalInvestedAmount -= investment.investmentAmount;
-        
-        // Mint return tokens to treasury
-        _mint(address(this), returnAmount);
-        
-        emit StartupInvestmentExited(investmentId, returnAmount);
-    }
-    
-    // Get all active investments
-    function getActiveInvestments() external view returns (uint256[] memory) {
-        uint256 activeCount = 0;
-        
-        // Count active investments
-        for (uint256 i = 0; i < nextInvestmentId; i++) {
-            if (startupInvestments[i].active) {
-                activeCount++;
+        // First, count matching jobs
+        for (uint256 i = 0; i < nextTranspilationId; i++) {
+            if (transpilationJobs[i].sourceSnippetId == snippetId) {
+                count++;
             }
         }
         
-        // Create result array
-        uint256[] memory activeInvestments = new uint256[](activeCount);
-        uint256 currentIndex = 0;
+        // Then create the result array
+        uint256[] memory result = new uint256[](count);
+        uint256 index = 0;
         
-        // Fill result array
-        for (uint256 i = 0; i < nextInvestmentId; i++) {
-            if (startupInvestments[i].active) {
-                activeInvestments[currentIndex] = i;
-                currentIndex++;
+        for (uint256 i = 0; i < nextTranspilationId; i++) {
+            if (transpilationJobs[i].sourceSnippetId == snippetId) {
+                result[index] = i;
+                index++;
             }
         }
         
-        return activeInvestments;
-    }
-    
-    // Calculate ROI for an investment (returns percentage, 10000 = 100%)
-    function calculateInvestmentROI(uint256 investmentId, uint256 currentValue) external view returns (uint256) {
-        StartupInvestment storage investment = startupInvestments[investmentId];
-        if (investment.investmentAmount == 0) return 0;
-        
-        // ROI = (Current Value - Investment) / Investment * 100
-        uint256 roi = ((currentValue - investment.investmentAmount) * 10000) / investment.investmentAmount;
-        return roi;
-    }
-    
-    // --- Portfolio Management Functions ---
-    
-    // Get total assets under management (USD value of treasury + investments)
-    function getTotalAssetsUnderManagement() external view returns (uint256) {
-        // BTC value + token treasury + invested amount
-        return treasuryValueUSD + (balanceOf(address(this)) * getEstimatedTokenPriceUSD()) / 1e18 + totalInvestedAmount;
-    }
-    
-    // Simple estimated token price in USD (6 decimals) - would use an oracle in production
-    function getEstimatedTokenPriceUSD() public view returns (uint256) {
-        if (totalSupply() == 0) return 0;
-        return (treasuryValueUSD * 1e18) / totalSupply();
+        return result;
     }
 
-    // --- Token Distribution & Sales ---
-    struct DistributionPlan {
-        string name;
-        uint256 totalAmount;
-        uint256 remainingAmount;
-        uint256 startTime;
-        uint256 endTime;
-        bool active;
-    }
-
-    struct SaleRound {
-        string name;
-        uint256 tokenPrice; // Price in wei per token
-        uint256 totalTokens;
-        uint256 soldTokens;
-        uint256 startTime;
-        uint256 endTime;
-        uint256 minPurchase;
-        uint256 maxPurchase;
-        bool whitelistEnabled;
-        bool active;
-    }
+    // --- Simple TypeScript to C Transpiler ---
     
-    struct Receipt {
-        address buyer;
-        uint256 amountPaid;
-        uint256 tokensBought;
-        uint256 timestamp;
-        string metadata;
-        uint256 saleRoundId;
-    }
-
-    mapping(uint256 => DistributionPlan) public distributionPlans;
-    uint256 public nextDistributionPlanId;
-    
-    mapping(uint256 => SaleRound) public saleRounds;
-    uint256 public nextSaleRoundId;
-    
-    mapping(uint256 => Receipt) public receipts;
-    uint256 public nextReceiptId;
-    
-    mapping(address => mapping(uint256 => bool)) public whitelist;
-    mapping(address => uint256[]) public userReceipts;
-
-    // Events
-    event DistributionPlanCreated(uint256 indexed planId, string name, uint256 totalAmount);
-    event TokensDistributed(uint256 indexed planId, address recipient, uint256 amount);
-    event SaleRoundCreated(uint256 indexed roundId, string name, uint256 tokenPrice);
-    event TokensPurchased(uint256 indexed roundId, address buyer, uint256 amount, uint256 receiptId);
-    event ReceiptGenerated(uint256 indexed receiptId, address buyer, uint256 amount);
-
-    // --- Distribution Functions ---
-    
-    // Create a new distribution plan
-    function createDistributionPlan(
-        string calldata name,
-        uint256 totalAmount,
-        uint256 startTime,
-        uint256 endTime
-    ) external onlyOwner whenNotPaused {
-        require(totalAmount > 0, "Amount must be greater than zero");
-        require(endTime > startTime, "End time must be after start time");
+    // This is a very simplified transpiler that handles basic TypeScript constructs
+    function simplifiedTranspile(uint256 snippetId) external onlyTranspiler returns (string memory) {
+        CodeSnippet storage snippet = codeSnippets[snippetId];
+        require(snippet.dialect == LanguageDialect.TYPESCRIPT, "Not a TypeScript snippet");
         
-        distributionPlans[nextDistributionPlanId] = DistributionPlan({
-            name: name,
-            totalAmount: totalAmount,
-            remainingAmount: totalAmount,
-            startTime: startTime,
-            endTime: endTime,
-            active: true
-        });
+        string memory tsCode = snippet.code;
+        string memory cCode = "";
         
-        emit DistributionPlanCreated(nextDistributionPlanId, name, totalAmount);
-        nextDistributionPlanId++;
+        // Convert 'let' and 'const' to appropriate C types
+        cCode = _replacePattern(tsCode, "let ", "auto ");
+        cCode = _replacePattern(cCode, "const ", "const auto ");
+        
+        // Convert arrow functions to C function pointers (simplified)
+        cCode = _replacePattern(cCode, "=>", "/*=>*/");
+        
+        // Add standard C headers
+        cCode = string(abi.encodePacked("#include <stdio.h>\n#include <stdlib.h>\n\n", cCode));
+        
+        // Convert TypeScript class to C struct + functions
+        cCode = _replacePattern(cCode, "class ", "typedef struct ");
+        
+        return cCode;
     }
     
-    // Distribute tokens to a recipient from a distribution plan
-    function distributeTokens(
-        uint256 planId,
-        address recipient,
-        uint256 amount
-    ) external onlyOwner whenNotPaused {
-        DistributionPlan storage plan = distributionPlans[planId];
-        require(plan.active, "Distribution plan not active");
-        require(block.timestamp >= plan.startTime, "Distribution not started");
-        require(block.timestamp <= plan.endTime, "Distribution ended");
-        require(amount <= plan.remainingAmount, "Insufficient tokens in plan");
+    // Simple pattern replacement function (very basic)
+    function _replacePattern(
+        string memory input,
+        string memory pattern,
+        string memory replacement
+    ) internal pure returns (string memory) {
+        bytes memory inputBytes = bytes(input);
+        bytes memory patternBytes = bytes(pattern);
         
-        plan.remainingAmount -= amount;
-        _mint(recipient, amount);
-        
-        emit TokensDistributed(planId, recipient, amount);
-    }
-    
-    // --- Sale Functions ---
-    
-    // Create a new sale round
-    function createSaleRound(
-        string calldata name,
-        uint256 tokenPrice,
-        uint256 totalTokens,
-        uint256 startTime,
-        uint256 endTime,
-        uint256 minPurchase,
-        uint256 maxPurchase,
-        bool whitelistEnabled
-    ) external onlyOwner whenNotPaused {
-        require(tokenPrice > 0, "Price must be greater than zero");
-        require(totalTokens > 0, "Total tokens must be greater than zero");
-        require(endTime > startTime, "End time must be after start time");
-        
-        saleRounds[nextSaleRoundId] = SaleRound({
-            name: name,
-            tokenPrice: tokenPrice,
-            totalTokens: totalTokens,
-            soldTokens: 0,
-            startTime: startTime,
-            endTime: endTime,
-            minPurchase: minPurchase,
-            maxPurchase: maxPurchase,
-            whitelistEnabled: whitelistEnabled,
-            active: true
-        });
-        
-        emit SaleRoundCreated(nextSaleRoundId, name, tokenPrice);
-        nextSaleRoundId++;
-    }
-    
-    // Add addresses to whitelist for a sale round
-    function addToWhitelist(uint256 roundId, address[] calldata addresses) external onlyOwner {
-        for (uint256 i = 0; i < addresses.length; i++) {
-            whitelist[addresses[i]][roundId] = true;
-        }
-    }
-    
-    // Remove addresses from whitelist for a sale round
-    function removeFromWhitelist(uint256 roundId, address[] calldata addresses) external onlyOwner {
-        for (uint256 i = 0; i < addresses.length; i++) {
-            whitelist[addresses[i]][roundId] = false;
-        }
-    }
-    
-    // Buy tokens from a sale round
-    function buyTokens(uint256 roundId, uint256 tokenAmount) external payable whenNotPaused notBlocked {
-        SaleRound storage round = saleRounds[roundId];
-        require(round.active, "Sale round not active");
-        require(block.timestamp >= round.startTime, "Sale not started");
-        require(block.timestamp <= round.endTime, "Sale ended");
-        require(tokenAmount >= round.minPurchase, "Below minimum purchase");
-        require(tokenAmount <= round.maxPurchase, "Exceeds maximum purchase");
-        require(tokenAmount <= (round.totalTokens - round.soldTokens), "Insufficient tokens available");
-        
-        if (round.whitelistEnabled) {
-            require(whitelist[msg.sender][roundId], "Address not whitelisted");
+        // If pattern is longer than input, no replacement needed
+        if (patternBytes.length > inputBytes.length) {
+            return input;
         }
         
-        uint256 cost = tokenAmount * round.tokenPrice;
-        require(msg.value >= cost, "Insufficient payment");
+        bytes memory result = new bytes(inputBytes.length * 2); // Allocate more space than needed
+        uint resultPos = 0;
         
-        // Update state
-        round.soldTokens += tokenAmount;
-        
-        // Mint tokens to buyer
-        _mint(msg.sender, tokenAmount);
-        
-        // Generate receipt
-        Receipt memory receipt = Receipt({
-            buyer: msg.sender,
-            amountPaid: cost,
-            tokensBought: tokenAmount,
-            timestamp: block.timestamp,
-            metadata: string(abi.encodePacked("Sale Round: ", round.name)),
-            saleRoundId: roundId
-        });
-        
-        receipts[nextReceiptId] = receipt;
-        userReceipts[msg.sender].push(nextReceiptId);
-        
-        emit TokensPurchased(roundId, msg.sender, tokenAmount, nextReceiptId);
-        emit ReceiptGenerated(nextReceiptId, msg.sender, tokenAmount);
-        
-        nextReceiptId++;
-        
-        // Refund excess payment
-        if (msg.value > cost) {
-            payable(msg.sender).transfer(msg.value - cost);
-        }
-    }
-    
-    // --- Receipt Functions ---
-    
-    // Get receipt details
-    function getReceipt(uint256 receiptId) external view returns (
-        address buyer,
-        uint256 amountPaid,
-        uint256 tokensBought,
-        uint256 timestamp,
-        string memory metadata
-    ) {
-        Receipt storage receipt = receipts[receiptId];
-        return (
-            receipt.buyer,
-            receipt.amountPaid,
-            receipt.tokensBought,
-            receipt.timestamp,
-            receipt.metadata
-        );
-    }
-    
-    // Get all receipts for a user
-    function getUserReceipts(address user) external view returns (uint256[] memory) {
-        return userReceipts[user];
-    }
-    
-    // Generate a printable receipt (returns a formatted string)
-    function generatePrintableReceipt(uint256 receiptId) external view returns (string memory) {
-        Receipt storage receipt = receipts[receiptId];
-        SaleRound storage round = saleRounds[receipt.saleRoundId];
-        
-        return string(abi.encodePacked(
-            "RECEIPT #", toString(receiptId), "\n",
-            "Date: ", toString(receipt.timestamp), "\n",
-            "Buyer: ", toString(receipt.buyer), "\n",
-            "Sale Round: ", round.name, "\n",
-            "Amount Paid: ", toString(receipt.amountPaid), " wei\n",
-            "Tokens Purchased: ", toString(receipt.tokensBought), "\n",
-            "Token Price: ", toString(round.tokenPrice), " wei\n",
-            "StreamToken Official Receipt"
-        ));
-    }
-    
-    // Helper function to convert uint to string
-    function toString(uint256 value) internal pure returns (string memory) {
-        if (value == 0) {
-            return "0";
+        // Very simplified replacement - not efficient but works for demo
+        for (uint i = 0; i < inputBytes.length; i++) {
+            bool matchFound = true;
+            
+            if (i <= inputBytes.length - patternBytes.length) {
+                for (uint j = 0; j < patternBytes.length; j++) {
+                    if (inputBytes[i + j] != patternBytes[j]) {
+                        matchFound = false;
+                        break;
+                    }
+                }
+                
+                if (matchFound) {
+                    // Append replacement
+                    bytes memory replacementBytes = bytes(replacement);
+                    for (uint j = 0; j < replacementBytes.length; j++) {
+                        result[resultPos++] = replacementBytes[j];
+                    }
+                    i += patternBytes.length - 1; // Skip pattern
+                    continue;
+                }
+            }
+            
+            // No match, copy current character
+            result[resultPos++] = inputBytes[i];
         }
         
-        uint256 temp = value;
-        uint256 digits;
-        
-        while (temp != 0) {
-            digits++;
-            temp /= 10;
+        // Create new string with exact length
+        bytes memory finalResult = new bytes(resultPos);
+        for (uint i = 0; i < resultPos; i++) {
+            finalResult[i] = result[i];
         }
         
-        bytes memory buffer = new bytes(digits);
-        while (value != 0) {
-            digits -= 1;
-            buffer[digits] = bytes1(uint8(48 + uint256(value % 10)));
-            value /= 10;
-        }
-        
-        return string(buffer);
+        return string(finalResult);
     }
-    
-    // Helper function to convert address to string
-    function toString(address account) internal pure returns (string memory) {
-        return toString(abi.encodePacked(account));
-    }
-    
-    // Helper function to convert bytes to string
-    function toString(bytes memory data) internal pure returns (string memory) {
-        bytes memory alphabet = "0123456789abcdef";
-        bytes memory str = new bytes(2 + data.length * 2);
-        str[0] = "0";
-        str[1] = "x";
-        
-        for (uint256 i = 0; i < data.length; i++) {
-            str[2 + i * 2] = alphabet[uint256(uint8(data[i] >> 4))];
-            str[3 + i * 2] = alphabet[uint256(uint8(data[i] & 0x0f))];
-        }
-        
-        return string(str);
-    }
-
-    // --- Font Settings Functions ---
-    
-    // Set user font preferences
-    function setUserFontSettings(
-        string calldata fontFamily,
-        uint8 fontSize,
-        string calldata primaryColor,
-        string calldata secondaryColor,
-        bool isBold,
-        bool isItalic,
-        string calldata customCSS
-    ) external notBlocked {
-        userFontSettings[msg.sender] = FontSettings({
-            fontFamily: fontFamily,
-            fontSize: fontSize,
-            primaryColor: primaryColor,
-            secondaryColor: secondaryColor,
-            isBold: isBold,
-            isItalic: isItalic,
-            customCSS: customCSS
-        });
-    }
-    
-    // Set receipt font settings
-    function setReceiptFontSettings(
-        uint256 receiptId,
-        string calldata fontFamily,
-        uint8 fontSize,
-        string calldata primaryColor,
-        string calldata secondaryColor,
-        bool isBold,
-        bool isItalic,
-        string calldata customCSS
-    ) external {
-        Receipt storage receipt = receipts[receiptId];
-        require(msg.sender == receipt.buyer || msg.sender == owner(), "Not authorized");
-        
-        receiptFontSettings[receiptId] = FontSettings({
-            fontFamily: fontFamily,
-            fontSize: fontSize,
-            primaryColor: primaryColor,
-            secondaryColor: secondaryColor,
-            isBold: isBold,
-            isItalic: isItalic,
-            customCSS: customCSS
-        });
-    }
-    
-    // --- Anointed Roles Functions ---
-    
-    // Anoint an address to a role
-    function anointRole(
-        string calldata roleName,
-        address assignedAddress,
-        uint256 durationDays,
-        string calldata privileges
-    ) external onlyOwner whenNotPaused {
-        require(assignedAddress != address(0), "Cannot anoint zero address");
-        
-        bytes32 roleKey = keccak256(abi.encodePacked(roleName, assignedAddress));
-        uint256 expiryDate = block.timestamp + (durationDays * 1 days);
-        
-        anointedRoles[roleKey] = AnointedRole({
-            roleName: roleName,
-            assignedAddress: assignedAddress,
-            anointedDate: block.timestamp,
-            expiryDate: expiryDate,
-            privileges: privileges,
-            isActive: true
-        });
-        
-        roleKeys.push(roleKey);
-        emit RoleAnointed(roleKey, roleName, assignedAddress);
-    }
-    
-    // Revoke an anointed role
-    function revokeRole(bytes32 roleKey) external onlyOwner {
-        AnointedRole storage role = anointedRoles[roleKey];
-        require(role.isActive, "Role not active");
-        
-        role.isActive = false;
-        emit RoleRevoked(roleKey, role.roleName, role.assignedAddress);
-    }
-    
-    // Check if an address has an anointed role
-    function hasRole(string calldata roleName, address checkAddress) external view returns (bool) {
-        bytes32 roleKey = keccak256(abi.encodePacked(roleName, checkAddress));
-        AnointedRole storage role = anointedRoles[roleKey];
-        
-        return role.isActive && role.expiryDate >= block.timestamp;
-    }
-    
-    // --- Dictionary Functions ---
-    
-    // Add or update a dictionary entry
-    function setDictionaryEntry(
-        string calldata key,
-        string calldata value,
-        string calldata language
-    ) external onlyTrustedOperator {
-        bytes32 entryKey = keccak256(abi.encodePacked(key, language));
-        
-        // Check if this is a new entry
-        bool isNew = bytes(dictionary[entryKey].key).length == 0;
-        
-        dictionary[entryKey] = DictionaryEntry({
-            key: key,
-            value: value,
-            language: language,
-            lastUpdated: block.timestamp,
-            updatedBy: msg.sender
-        });
-        
-        if (isNew) {
-            dictionaryKeys.push(entryKey);
-        }
-    }
-    
-    // Get a dictionary entry
-    function getDictionaryEntry(string calldata key, string calldata language) external view returns (string memory) {
-        bytes32 entryKey = keccak256(abi.encodePacked(key, language));
-        return dictionary[entryKey].value;
-    }
-    
-    // --- Adrian Memorial Grant System ---
-    
-    // Create a new Adrian grant
-    function createAdrianGrant(
-        address recipient,
-        uint256 amount,
-        string calldata purpose
-    ) external onlyOwner whenNotPaused {
-        require(recipient != address(0), "Invalid recipient");
-        require(amount > 0, "Grant amount must be greater than zero");
-        
-        adrianGrants[nextAdrianGrantId] = AdrianGrant({
-            recipient: recipient,
-            amount: amount,
-            purpose: purpose,
-            grantDate: block.timestamp,
-            isActive: true
-        });
-        
-        totalAdrianGrantsAwarded += amount;
-        
-        // Transfer tokens to recipient
-        _mint(recipient, amount);
-        
-        emit AdrianGrantAwarded(nextAdrianGrantId, recipient, amount);
-        nextAdrianGrantId++;
-    }
-    
-    // Revoke an Adrian grant
-    function revokeAdrianGrant(uint256 grantId) external onlyOwner {
-        AdrianGrant storage grant = adrianGrants[grantId];
-        require(grant.isActive, "Grant not active");
-        
-        grant.isActive = false;
-        totalAdrianGrantsAwarded -= grant.amount;
-    }
-    
-    // --- Regional Settings for SA/UAE ---
-    
-    // Add or update regional settings
-    function setRegionalSettings(
-        string calldata region,
-        bool supportsShariaCompliance,
-        string calldata localCurrency,
-        uint256 localCurrencyConversionRate,
-        string calldata localTimeZone,
-        address regionalAdministrator,
-        bool requiresKYC
-    ) external onlyOwner {
-        bool isNew = bytes(regionalSettings[region].localCurrency).length == 0;
-        
-        regionalSettings[region] = RegionalSettings({
-            supportsShariaCompliance: supportsShariaCompliance,
-            localCurrency: localCurrency,
-            localCurrencyConversionRate: localCurrencyConversionRate,
-            localTimeZone: localTimeZone,
-            regionalAdministrator: regionalAdministrator,
-            requiresKYC: requiresKYC
-        });
-        
-        if (isNew) {
-            supportedRegions.push(region);
-        }
-        
-        emit RegionalSettingsUpdated(region, localCurrency, localCurrencyConversionRate);
-    }
-    
-    // Get price in local currency
-    function getPriceInLocalCurrency(uint256 tokenAmount, string calldata region) external view returns (uint256) {
-        RegionalSettings storage settings = regionalSettings[region];
-        require(bytes(settings.localCurrency).length > 0, "Region not configured");
-        
-        uint256 priceUSD = tokenAmount * getEstimatedTokenPriceUSD();
-        return (priceUSD * settings.localCurrencyConversionRate) / 1e6;
-    }
-    
-    // Check if transaction is permitted in region
-    function isTransactionPermittedInRegion(
-        address sender, 
-        address recipient, 
-        uint256 amount, 
-        string calldata region
-    ) external view returns (bool) {
-        RegionalSettings storage settings = regionalSettings[region];
-        
-        // Basic implementation - additional logic would be needed for real compliance
-        if (settings.requiresKYC) {
-            // Would check KYC status here
-        }
-        
-        if (settings.supportsShariaCompliance) {
-            // Would implement Sharia compliance checks here
-        }
-        
-        return true; // Placeholder for actual implementation
-    }
-
-    // --- BRC Bridge and Mapping Functions ---
-
-    // Set Bitcoin network type
-    function setBitcoinNetwork(string calldata network) external onlyOwner {
-        require(
-            keccak256(bytes(network)) == keccak256(bytes("mainnet")) ||
-            keccak256(bytes(network)) == keccak256(bytes("testnet")) ||
-            keccak256(bytes(network)) == keccak256(bytes("regtest")),
-            "Invalid network type"
-        );
-        bitcoinNetwork = network;
-    }
-
-    // Set bridge operator
-    function setBridgeOperator(address operator) external onlyOwner {
-        bridgeOperator = operator;
-    }
-
-    // Add a bridge validator
-    function addBridgeValidator(address validator) external onlyOwner {
-        authorizedBridgeValidators[validator] = true;
-    }
-
-    // Remove a bridge validator
-    function removeBridgeValidator(address validator) external onlyOwner {
-        authorizedBridgeValidators[validator] = false;
-    }
-
-    // Set required validations
-    function setRequiredValidations(uint256 count) external onlyOwner {
-        requiredValidations = count;
-    }
-
-    // Create a BRC mapping for Ethereum address
-    function createBRCMapping(
-        address ethAddress,
-        string calldata btcAddress,
-        uint256 amount,
-        string calldata inscriptionId,
-        string calldata brcType,
-        string calldata brcData
-    ) external onlyGwenAdmin whenNotPaused {
-        uint256 mappingId = ethToBrcMappingCounts[ethAddress];
-        
-        ethToBrcMappings[ethAddress][mappingId] = BRCMapping({
-            btcAddress: btcAddress,
-            amount: amount,
-            mappingTimestamp: block.timestamp,
-            active: true,
-            inscriptionId: inscriptionId,
-            brcType: brcType,
-            brcData: brcData
-        });
-        
-        ethToBrcMappingCounts[ethAddress]++;
-        
-        uint256 btcMappingId = brcToEthMappingCounts[btcAddress];
-        brcToEthMappings[btcAddress][btcMappingId] = ethToBrcMappings[ethAddress][mappingId];
-        brcToEthMappingCounts[btcAddress]++;
-        
-        emit BRCMappingCreated(ethAddress, btcAddress, amount, brcType);
-    }
-
-    // Initiate bridge to Bitcoin
-    function bridgeTokensToBitcoin(
-        string calldata btcAddress,
-        uint256 amount
-    ) external notBlocked whenNotPaused {
-        require(balanceOf(msg.sender) >= amount, "Insufficient balance");
-        
-        // Lock tokens in the contract
-        _transfer(msg.sender, address(this), amount);
-        
-        // Create bridge operation
-        bridgeOperations[nextBridgeOperationId] = BridgeOperation({
-            ethAddress: msg.sender,
-            btcAddress: btcAddress,
-            amount: amount,
-            isToBitcoin: true,
-            operationTime: block.timestamp,
-            completed: false,
-            completionTime: 0,
-            txHash: ""
-        });
-        
-        emit BridgeOperationInitiated(
-            nextBridgeOperationId,
-            msg.sender,
-            btcAddress,
-            amount,
-            true
-        );
-        
-        nextBridgeOperationId++;
-    }
-
-    // Validate a bridge operation
-    function validateBridgeOperation(uint256 operationId) external whenNotPaused {
-        require(authorizedBridgeValidators[msg.sender], "Not a bridge validator");
-        require(!bridgeOperations[operationId].completed, "Operation already completed");
-        require(!operationValidations[operationId][msg.sender], "Already validated by this validator");
-        
-        operationValidations[operationId][msg.sender] = true;
-        operationValidationCounts[operationId]++;
-        
-        emit BridgeOperationValidated(operationId, msg.sender);
-        
-        // If we have enough validations, complete the operation
-        if (operationValidationCounts[operationId] >= requiredValidations) {
-            completeBridgeOperation(operationId, "");
-        }
-    }
-
-    // Complete a bridge operation
-    function completeBridgeOperation(uint256 operationId, string memory txHash) public {
-        require(msg.sender == bridgeOperator || operationValidationCounts[operationId] >= requiredValidations, "Not authorized");
-        require(!bridgeOperations[operationId].completed, "Operation already completed");
-        
-        BridgeOperation storage operation = bridgeOperations[operationId];
-        operation.completed = true;
-        operation.completionTime = block.timestamp;
-        operation.txHash = txHash;
-        
-        // Handle token movement for BTC to ETH operations
-        if (!operation.isToBitcoin) {
-            // Mint tokens when bridging from Bitcoin to Ethereum
-            _mint(operation.ethAddress, operation.amount);
-        }
-        
-        emit BridgeOperationCompleted(operationId, txHash);
-    }
-
-    // Initiate bridge from Bitcoin (called by bridge operator)
-    function bridgeTokensFromBitcoin(
-        address ethAddress,
-        string calldata btcAddress,
-        string calldata txHash,
-        uint256 amount
-    ) external whenNotPaused {
-        require(msg.sender == bridgeOperator, "Not bridge operator");
-        
-        // Create bridge operation
-        bridgeOperations[nextBridgeOperationId] = BridgeOperation({
-            ethAddress: ethAddress,
-            btcAddress: btcAddress,
-            amount: amount,
-            isToBitcoin: false,
-            operationTime: block.timestamp,
-            completed: false,
-            completionTime: 0,
-            txHash: txHash
-        });
-        
-        emit BridgeOperationInitiated(
-            nextBridgeOperationId,
-            ethAddress,
-            btcAddress,
-            amount,
-            false
-        );
-        
-        // For bridge from Bitcoin, we require validations
-        // When enough validations are received, tokens will be minted
-        
-        nextBridgeOperationId++;
-    }
-
-    // Cancel a bridge operation (only for operations that haven't been completed)
-    function cancelBridgeOperation(uint256 operationId) external {
-        BridgeOperation storage operation = bridgeOperations[operationId];
-        
-        require(!operation.completed, "Operation already completed");
-        require(
-            msg.sender == owner() ||
-            msg.sender == operation.ethAddress ||
-            msg.sender == bridgeOperator,
-            "Not authorized"
-        );
-        
-        // If this was a bridge to Bitcoin, return the locked tokens
-        if (operation.isToBitcoin) {
-            _transfer(address(this), operation.ethAddress, operation.amount);
-        }
-        
-        // Mark as completed but with empty txHash to indicate cancellation
-        operation.completed = true;
-        operation.completionTime = block.timestamp;
-        
-        emit BridgeOperationCompleted(operationId, "CANCELLED");
-    }
-    
-    // Get an ETH to BRC mapping
-    function getEthToBrcMapping(address ethAddress, uint256 mappingId) 
-        external view returns (
-            string memory btcAddress,
-            uint256 amount,
-            uint256 mappingTimestamp,
-            bool active,
-            string memory inscriptionId,
-            string memory brcType,
-            string memory brcData
-        ) 
-    {
-        BRCMapping storage mapping_ = ethToBrcMappings[ethAddress][mappingId];
-        return (
-            mapping_.btcAddress,
-            mapping_.amount,
-            mapping_.mappingTimestamp,
-            mapping_.active,
-            mapping_.inscriptionId,
-            mapping_.brcType,
-            mapping_.brcData
-        );
-    }
-    
-    // Get a BRC to ETH mapping
-    function getBrcToEthMapping(string calldata btcAddress, uint256 mappingId)
-        external view returns (
-            string memory btcAddr,
-            uint256 amount,
-            uint256 mappingTimestamp,
-            bool active,
-            string memory inscriptionId,
-            string memory brcType,
-            string memory brcData
-        )
-    {
-        BRCMapping storage mapping_ = brcToEthMappings[btcAddress][mappingId];
-        return (
-            mapping_.btcAddress,
-            mapping_.amount,
-            mapping_.mappingTimestamp,
-            mapping_.active,
-            mapping_.inscriptionId,
-            mapping_.brcType,
-            mapping_.brcData
-        );
-    }
-
-    // Get bridge operation details
-    function getBridgeOperation(uint256 operationId)
-        external view returns (
-            address ethAddress,
-            string memory btcAddress,
-            uint256 amount,
-            bool isToBitcoin,
-            uint256 operationTime,
-            bool completed,
-            uint256 completionTime,
-            string memory txHash,
-            uint256 validationCount
-        )
-    {
-        BridgeOperation storage operation = bridgeOperations[operationId];
-        return (
-            operation.ethAddress,
-            operation.btcAddress,
-            operation.amount,
-            operation.isToBitcoin,
-            operation.operationTime,
-            operation.completed,
-            operation.completionTime,
-            operation.txHash,
-            operationValidationCounts[operationId]
-        );
+}
