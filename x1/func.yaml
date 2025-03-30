@@ -1,0 +1,9 @@
+specVersion: 0.36.0
+name: x1
+runtime: python
+created: 2025-03-30T00:22:58.472Z
+run:
+  envs:
+    - name: APP_MODULE
+      value: func:application
+image: docker.io/Sam/x1:latest
